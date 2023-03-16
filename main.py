@@ -75,9 +75,14 @@ class ViesChecker:
             if self.sheet.cell(row=i, column=2).value is None:
                 cell = self.sheet.cell(row=i, column=1)
                 self.vat_list.append(cell.value)
-        self.status_bar_threads.config(text="Zpracováno: " + str(0) + "/" + str(len(self.vat_list)))
+        # if there are no VAT numbers to check, it will be disabled
+        if len(self.vat_list) == 0:
+            self.start.config(state=tk.DISABLED)
+            self.status_bar_threads.config(text="Soubor je již kompletně ověřen.")
+        else:
+            self.start.config(state=tk.NORMAL)
+            self.status_bar_threads.config(text="Zpracováno: " + str(0) + "/" + str(len(self.vat_list)))
         self.status_bar.config(text="Status: Soubor načten.")
-        self.start.config(state=tk.NORMAL)
 
     def __file_path_fce(self):
         path = filedialog.askopenfilename()
@@ -104,14 +109,16 @@ class ViesChecker:
             print("Thread " + i + " initialized")
 
         finished = 0
-
+        # while there are still threads to
         while finished < len(threads):
             start_time = time.time()
             threads[finished][0].start()
             wait_time = 30
+            # wait for thread to finish
             while threads[finished][2][0] is False and threads[finished][2][
                 1] > 0 and time.time() - start_time < wait_time:
                 left_count = threads[finished][2][1]
+                # change color of status bar if there is less than 3 tries left or less than 20 seconds to timeout
                 if left_count < 3 or int(wait_time - (time.time() - start_time)) < 20:
                     self.status_bar.config(background="orange")
                 else:
@@ -129,7 +136,11 @@ class ViesChecker:
             else:
                 self.ok_list.insert(0, threads[finished][1])
             time.sleep(1)
+            # if thread is still not finnished
             if threads[finished][2][0] is False:
+                self.status_bar.config(text="Čekám na " + threads[finished][1] + "\n Zabijím výpočet. 10s do konce.")
+                self.root.update()
+                # joit thread with timeout
                 threads[finished][0].join(timeout=10)
             finished += 1
             self.status_bar_threads.config(text="Zpracováno: " + str(finished) + "/" + str(len(threads)))
@@ -139,8 +150,12 @@ class ViesChecker:
         self.status_bar.config(text="Status: Dokončeno.")
         self.pick_file.config(state=tk.NORMAL)
 
-
     def save(self):
+        """
+        Function for saving results to file
+        While there is something in queue, it will be saved to file
+        :return:
+        """
         while not self.queue.empty():
             vat, result = self.queue.get()
 
@@ -160,6 +175,16 @@ class ViesChecker:
 
 
 def check_vat(vat, queue, error_queue, running_queue, status_array=None):
+    """
+    Function for checking VAT number using SOAP API from EU website (https://ec.europa.eu/taxation_customs/vies/)
+    Using SOAP API from zeep library (https://python-zeep.readthedocs.io/en/master/)
+    :param vat: VAT number to check
+    :param queue: Queue for valid VAT numbers
+    :param error_queue: Queue for error VAT numbers
+    :param running_queue: Queue for running threads
+    :param status_array: Status array of thread
+    :return:
+    """
     if status_array is None:
         status_array = [False, 3]
     done = status_array[0]
@@ -168,15 +193,20 @@ def check_vat(vat, queue, error_queue, running_queue, status_array=None):
         while status_array[1] > 0:
             try:
                 running_queue.put(vat)
+                # set timeout for connection
                 transport = Transport(timeout=5)
+                # create client for SOAP API using CachingClient
                 client = CachingClient('http://ec.europa.eu/taxation_customs/vies/checkVatService.wsdl',
                                        transport=transport).service
+                # get result from SOAP API
                 result = client.checkVat(countryCode=vat[:2], vatNumber=vat[2:])
+                # add to queue
                 queue.put((vat, result["valid"]))
-                error_counter = 0
+                # set status to done
                 status_array[0] = True
                 break
             except Exception as e:
+                # if error, decrease number of tries
                 status_array[1] -= 1
                 logging.error(e)
                 time.sleep(3)
@@ -188,82 +218,11 @@ def check_vat(vat, queue, error_queue, running_queue, status_array=None):
         error_queue.put(vat)
         print(e)
     finally:
+        # remove from running queue
         running_queue.get()
         print("Thread " + vat + " finished")
 
         # print active threads
-
-
-def wait_until_clear(queue, index=None, threads=None):
-    start_time = time.time()
-    suffix = "/"
-    while running_queue.qsize() >= 3:
-        list_of_running_vats = list(running_queue.queue)
-        list_of_running_vats_text = ""
-        for i in list_of_running_vats:
-            list_of_running_vats_text += i + ", \n"
-        status_bar.config(text="Aktuálně zpracovávám: \n" + str(list_of_running_vats_text) + " DIČ." + suffix)
-        status_bar_threads.config(
-            text="Správně zpracovaných dotazů: " + str(queue.qsize()) + "/" + str(len(vat_list)) + " DIČ.")
-        error_counter_label.config(text="Počet chyb: " + str(error_queue.qsize()))
-        time.sleep(0.3)
-        if suffix == "/":
-            suffix = "-"
-        elif suffix == "-":
-            suffix = "\\"
-        elif suffix == "\\":
-            suffix = "|"
-        elif suffix == "|":
-            suffix = "/"
-
-        if not error_queue.empty():
-            error_list.insert(tk.END, error_queue.get())
-        if not queue.empty():
-            ok_list_list = list(queue.queue)
-            ok_list.delete(0, tk.END)
-            for i in ok_list_list:
-                ok_list.insert(0, i[0])
-        root.update()
-        if not index and not threads:
-            break
-        else:
-            if start_time + 30 < time.time():
-                print("Thread " + str(index) + " is stuck, killing it.")
-                error_queue.put(threads[index - 1][1])
-                threads[index - 1][0].join(timeout=5)
-                break
-
-
-def solver_fce():
-    # create queue
-    queue = Queue()
-    # create list of VAT numbers
-
-    active_threads = 0
-    finished = 0
-
-    for index, t in enumerate(threads):
-        wait_until_clear(queue=queue, index=index, threads=threads)
-        if running_queue.qsize() < 3:
-            try:
-                t[0].start()
-                active_threads += 1
-            except Exception as e:
-                print(e)
-                logging.error(e)
-
-    wait_until_clear(queue=queue)
-
-    status_bar.config(text="Dokončeno. Ukládám do souboru.")
-    status_bar_threads.config(
-        text="Správně zpracovaných dotazů: " + str(queue.qsize()) + "/" + str(len(vat_list)) + " DIČ.")
-    error_counter_label.config(text="Počet chyb: " + str(error_queue.qsize()))
-    root.update()
-    save(queue=queue, max_row=max_row, sheet=sheet, wb=wb)
-
-
-def main_loop(error_queue, queue):
-    pass
 
 
 if __name__ == '__main__':
